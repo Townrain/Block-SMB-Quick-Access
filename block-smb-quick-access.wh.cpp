@@ -2,7 +2,7 @@
 // @id              block-smb-quick-access
 // @name            Block SMB Quick Access
 // @description     Prevents SMB/UNC network paths from being added to Quick Access in Windows Explorer
-// @version         1.1
+// @version         1.2
 // @author          Townrain
 // @github          https://github.com/Townrain
 // @include         explorer.exe
@@ -22,7 +22,6 @@ in Windows Explorer. Local paths continue to work normally.
 - **Selective blocking**: Only blocks SMB/UNC network paths, local paths work normally
 - **Comprehensive SHARD support**: Handles all SHARD types (PATHA, PATHW, PIDL, SHELLITEM, LINK, APPIDINFO, APPIDINFOIDLIST, APPIDINFOLINK)
 - **UNC priority**: Uses `SLGP_UNCPRIORITY` to correctly detect mapped drive letters
-- **Configurable logging**: Optional logging of blocked paths for debugging
 - **Silent operation**: Runs in background without UI
 
 ## How it works
@@ -41,30 +40,18 @@ the original function is called normally.
 
 - Does not block paths added via other mechanisms (e.g., registry manipulation)
 - Some virtual folder PIDLs may not resolve to paths and will be allowed through
-- COM interfaces (IShellItem, IShellLink) require proper thread initialization
 
 ## Troubleshooting
 
 If the mod doesn't seem to work:
 
-1. Enable "Log blocked paths" in mod settings
+1. Enable debug logging in Windhawk settings (Settings > Advanced > Debug logging)
 2. Check Windhawk debug logs for `[NOSMB]` entries
 3. Verify the mod is enabled for explorer.exe in Windhawk settings
 4. Restart Explorer or log out/in after enabling the mod
 
 */
 // ==/WindhawkModReadme==
-
-// ==WindhawkModSettings==
-/*
-- logBlocked: true
-  $name: Log blocked paths
-  $description: Log when an SMB path is blocked from Quick Access (useful for debugging)
-- verboseLogging: false
-  $name: Verbose logging
-  $description: Log all SHAddToRecentDocs calls, not just blocked ones (very verbose)
-*/
-// ==/WindhawkModSettings==
 
 #include <windows.h>
 #include <shlobj.h>
@@ -85,13 +72,6 @@ If the mod doesn't seem to work:
 
 typedef void (WINAPI *SHAddToRecentDocs_t)(UINT uFlags, LPCVOID pv);
 static SHAddToRecentDocs_t pfnOriginal = nullptr;
-
-// =============================================================================
-// Settings
-// =============================================================================
-
-static bool g_logBlocked = true;
-static bool g_verboseLogging = false;
 
 // =============================================================================
 // UNC/SMB path detection (optimized)
@@ -122,30 +102,22 @@ static bool ShouldBlock(UINT uFlags, LPCVOID pv) {
     switch (uFlags) {
         case SHARD_PATHA: {
             LPCSTR pathA = (LPCSTR)pv;
-            if (g_verboseLogging) {
-                Wh_Log(L"[NOSMB] SHARD_PATHA: %hs", pathA);
-            }
+            Wh_Log(L"[NOSMB] SHARD_PATHA: %hs", pathA);
             return IsUncPathA(pathA);
         }
 
         case SHARD_PATHW: {
             LPCWSTR pathW = (LPCWSTR)pv;
-            if (g_verboseLogging) {
-                Wh_Log(L"[NOSMB] SHARD_PATHW: %s", pathW);
-            }
+            Wh_Log(L"[NOSMB] SHARD_PATHW: %s", pathW);
             return IsUncPathW(pathW);
         }
 
         case SHARD_PIDL: {
             if (SHGetPathFromIDListW((PCIDLIST_ABSOLUTE)pv, path)) {
-                if (g_verboseLogging) {
-                    Wh_Log(L"[NOSMB] SHARD_PIDL: %s", path);
-                }
+                Wh_Log(L"[NOSMB] SHARD_PIDL: %s", path);
                 return IsUncPathW(path);
             }
-            if (g_verboseLogging) {
-                Wh_Log(L"[NOSMB] SHARD_PIDL: (unresolvable)");
-            }
+            Wh_Log(L"[NOSMB] SHARD_PIDL: (unresolvable)");
             return false;
         }
 
@@ -154,15 +126,11 @@ static bool ShouldBlock(UINT uFlags, LPCVOID pv) {
             LPWSTR displayName = nullptr;
             if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &displayName))) {
                 bool blocked = IsUncPathW(displayName);
-                if (g_verboseLogging) {
-                    Wh_Log(L"[NOSMB] SHARD_SHELLITEM: %s", displayName);
-                }
+                Wh_Log(L"[NOSMB] SHARD_SHELLITEM: %s", displayName);
                 CoTaskMemFree(displayName);
                 return blocked;
             }
-            if (g_verboseLogging) {
-                Wh_Log(L"[NOSMB] SHARD_SHELLITEM: (no filesystem path)");
-            }
+            Wh_Log(L"[NOSMB] SHARD_SHELLITEM: (no filesystem path)");
             return false;
         }
 
@@ -170,14 +138,10 @@ static bool ShouldBlock(UINT uFlags, LPCVOID pv) {
             IShellLinkW* link = (IShellLinkW*)pv;
             // Use SLGP_UNCPRIORITY to get UNC path instead of mapped drive letter
             if (SUCCEEDED(link->GetPath(path, MAX_PATH, nullptr, SLGP_UNCPRIORITY))) {
-                if (g_verboseLogging) {
-                    Wh_Log(L"[NOSMB] SHARD_LINK: %s", path);
-                }
+                Wh_Log(L"[NOSMB] SHARD_LINK: %s", path);
                 return IsUncPathW(path);
             }
-            if (g_verboseLogging) {
-                Wh_Log(L"[NOSMB] SHARD_LINK: (no path)");
-            }
+            Wh_Log(L"[NOSMB] SHARD_LINK: (no path)");
             return false;
         }
 
@@ -188,16 +152,12 @@ static bool ShouldBlock(UINT uFlags, LPCVOID pv) {
                 LPWSTR displayName = nullptr;
                 if (SUCCEEDED(info->psi->GetDisplayName(SIGDN_FILESYSPATH, &displayName))) {
                     bool blocked = IsUncPathW(displayName);
-                    if (g_verboseLogging) {
-                        Wh_Log(L"[NOSMB] SHARD_APPIDINFO: %s", displayName);
-                    }
+                    Wh_Log(L"[NOSMB] SHARD_APPIDINFO: %s", displayName);
                     CoTaskMemFree(displayName);
                     return blocked;
                 }
             }
-            if (g_verboseLogging) {
-                Wh_Log(L"[NOSMB] SHARD_APPIDINFO: (no filesystem path)");
-            }
+            Wh_Log(L"[NOSMB] SHARD_APPIDINFO: (no filesystem path)");
             return false;
         }
 
@@ -206,15 +166,11 @@ static bool ShouldBlock(UINT uFlags, LPCVOID pv) {
             const SHARDAPPIDINFOIDLIST* info = (const SHARDAPPIDINFOIDLIST*)pv;
             if (info && info->pidl) {
                 if (SHGetPathFromIDListW(info->pidl, path)) {
-                    if (g_verboseLogging) {
-                        Wh_Log(L"[NOSMB] SHARD_APPIDINFOIDLIST: %s", path);
-                    }
+                    Wh_Log(L"[NOSMB] SHARD_APPIDINFOIDLIST: %s", path);
                     return IsUncPathW(path);
                 }
             }
-            if (g_verboseLogging) {
-                Wh_Log(L"[NOSMB] SHARD_APPIDINFOIDLIST: (unresolvable)");
-            }
+            Wh_Log(L"[NOSMB] SHARD_APPIDINFOIDLIST: (unresolvable)");
             return false;
         }
 
@@ -224,22 +180,16 @@ static bool ShouldBlock(UINT uFlags, LPCVOID pv) {
             if (info && info->psl) {
                 // Use SLGP_UNCPRIORITY to get UNC path instead of mapped drive letter
                 if (SUCCEEDED(info->psl->GetPath(path, MAX_PATH, nullptr, SLGP_UNCPRIORITY))) {
-                    if (g_verboseLogging) {
-                        Wh_Log(L"[NOSMB] SHARD_APPIDINFOLINK: %s", path);
-                    }
+                    Wh_Log(L"[NOSMB] SHARD_APPIDINFOLINK: %s", path);
                     return IsUncPathW(path);
                 }
             }
-            if (g_verboseLogging) {
-                Wh_Log(L"[NOSMB] SHARD_APPIDINFOLINK: (no path)");
-            }
+            Wh_Log(L"[NOSMB] SHARD_APPIDINFOLINK: (no path)");
             return false;
         }
 
         default:
-            if (g_verboseLogging) {
-                Wh_Log(L"[NOSMB] Unknown SHARD type: %u", uFlags);
-            }
+            Wh_Log(L"[NOSMB] Unknown SHARD type: %u", uFlags);
             return false;
     }
 }
@@ -250,9 +200,7 @@ static bool ShouldBlock(UINT uFlags, LPCVOID pv) {
 
 void WINAPI HookedSHAddToRecentDocs(UINT uFlags, LPCVOID pv) {
     if (ShouldBlock(uFlags, pv)) {
-        if (g_logBlocked) {
-            Wh_Log(L"[NOSMB] Blocked SMB/UNC path from Quick Access (flags=%u)", uFlags);
-        }
+        Wh_Log(L"[NOSMB] Blocked SMB/UNC path from Quick Access (flags=%u)", uFlags);
         return; // Silently drop the call
     }
 
@@ -263,25 +211,11 @@ void WINAPI HookedSHAddToRecentDocs(UINT uFlags, LPCVOID pv) {
 }
 
 // =============================================================================
-// Settings
-// =============================================================================
-
-static void LoadSettings() {
-    g_logBlocked = Wh_GetIntSetting(L"logBlocked") != 0;
-    g_verboseLogging = Wh_GetIntSetting(L"verboseLogging") != 0;
-
-    Wh_Log(L"[NOSMB] Settings loaded: logBlocked=%d, verboseLogging=%d",
-           g_logBlocked, g_verboseLogging);
-}
-
-// =============================================================================
 // Windhawk callbacks
 // =============================================================================
 
 BOOL Wh_ModInit() {
     Wh_Log(L"[NOSMB] Initializing mod...");
-
-    LoadSettings();
 
     // Get shell32 module handle
     HMODULE hShell32 = GetModuleHandleW(L"shell32.dll");
@@ -319,9 +253,4 @@ void Wh_ModBeforeUninit() {
 
 void Wh_ModUninit() {
     Wh_Log(L"[NOSMB] Mod uninitialized.");
-}
-
-void Wh_ModSettingsChanged() {
-    Wh_Log(L"[NOSMB] Settings changed, reloading...");
-    LoadSettings();
 }
